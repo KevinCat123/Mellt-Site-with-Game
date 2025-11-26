@@ -1,0 +1,851 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>Приключения искры — Improved</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <style>
+        body { margin: 0; overflow: hidden; background: linear-gradient(to bottom, #87CEEB, #E0F7FA); font-family: 'Press Start 2P', cursive; }
+        #gameUI{position:fixed;top:10px;left:10px;color:white;background:rgba(0,0,0,0.5);padding:10px;border-radius:5px;z-index:10;font-size:0.8rem}
+        #inventory,#tools{position:fixed;bottom:20px;display:flex;gap:10px;background:rgba(0,0,0,0.7);padding:10px;border-radius:10px;z-index:10}
+        #inventory{left:50%;transform:translateX(-50%)}
+        #tools{right:20px}
+        .item{width:42px;height:42px;border:2px solid #555;cursor:pointer;background-size:cover;image-rendering:pixelated;position:relative}
+        .item.active{border-color:gold;box-shadow:0 0 10px gold}
+        .item-count{position:absolute;bottom:2px;right:2px;color:white;font-size:10px;text-shadow:1px 1px 1px black}
+        canvas{display:block;image-rendering:pixelated}
+        #audioToggle,#helpToggle,#craftButton{position:fixed;padding:5px 10px;background:rgba(0,0,0,0.5);color:white;border:none;border-radius:5px;cursor:pointer;font-size:0.7rem}
+        #audioToggle{top:10px;right:10px}
+        #helpToggle{top:10px;right:100px}
+        #craftButton{bottom:100px;right:20px;background:rgba(100,200,100,0.7);z-index:15}
+        #tooltip{position:fixed;bottom:120px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.7);color:white;padding:8px 15px;border-radius:5px;font-size:0.8rem;opacity:0;transition:opacity 0.3s;pointer-events:none}
+        #controlsHelp{position:fixed;top:50px;right:20px;background:rgba(0,0,0,0.7);color:white;padding:10px;border-radius:5px;font-size:0.7rem;display:none;z-index:20}
+        #dayNightIndicator{position:fixed;top:10px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.5);color:white;padding:5px 10px;border-radius:5px;font-size:0.7rem;z-index:10}
+        #blockName{position:fixed;background:rgba(0,0,0,0.7);color:white;padding:5px 10px;border-radius:5px;font-size:0.8rem;pointer-events:none;transform:translate(-50%,-100%);display:none;z-index:100}
+        #craftMenu{position:fixed;bottom:150px;right:20px;background:rgba(0,0,0,0.8);padding:15px;border-radius:10px;display:none;flex-direction:column;gap:10px;z-index:15;width:220px}
+        .craftRecipe{display:flex;align-items:center;gap:10px;padding:8px;cursor:pointer;border-radius:5px;font-size:0.7rem;color:white}
+        .craftRecipe:hover{background:rgba(255,255,255,0.06)}
+        .craftRecipe img{width:24px;height:24px;image-rendering:pixelated}
+    </style>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div id="gameUI"></div>
+    <div id="dayNightIndicator">День</div>
+    <button id="audioToggle">🔊 Звук ВКЛ</button>
+    <button id="helpToggle">❓ Подсказки</button>
+    <button id="craftButton">🧰 Крафт</button>
+    <div id="controlsHelp">
+        <div>WASD - Движение</div>
+        <div>SPACE - Прыжок</div>
+        <div>ЛКМ - Строить</div>
+        <div>ПКМ - Ломать</div>
+        <div>1-9 - Выбор слотов</div>
+        <div>R - Меню крафта</div>
+    </div>
+    <div id="tooltip"></div>
+    <canvas id="gameCanvas"></canvas>
+    <div id="inventory"></div>
+    <div id="tools"></div>
+    <div id="blockName"></div>
+
+    <div id="craftMenu">
+        <div class="craftRecipe" id="craft_planks">
+            <img src="Texture/wood.png"> → <img src="Texture/planks.png">×5
+            <span style="margin-left:10px;">Доска (1 бревно → 5 досок)</span>
+        </div>
+        <div class="craftRecipe" id="craft_workbench">
+            <img src="Texture/planks.png">×15 → <img src="Texture/workbench.png">
+            <span style="margin-left:10px;">Верстак (15 досок → 1 верстак)</span>
+        </div>
+    </div>
+
+    <audio id="jumpSound"><source src="sound/jump.wav" type="audio/wav"></audio>
+    <audio id="breakSound"><source src="sound/break.wav" type="audio/wav"></audio>
+    <audio id="walkSound"><source src="sound/walk.wav" type="audio/wav"></audio>
+    <audio id="backgroundMusic" loop><source src="sound/background.mp3" type="audio/mp3"></audio>
+
+<script>
+// ====== Параметры ======
+const TILE_SIZE = 42;
+const WORLD_WIDTH = 500;
+const WORLD_HEIGHT = 100;
+const PLAYER_WIDTH = TILE_SIZE * 0.8;
+const PLAYER_HEIGHT = TILE_SIZE * 1.8; // чуть меньше 2 блоков
+const CAMERA_SMOOTHING = 0.12;
+
+// Цикл день/ночь: 5 минут день, 1 минута ночь
+const DAY_NIGHT_CYCLE = { day: 300, night: 60 }; // в секундах
+const TRANSITION_MS = 2200; // плавный переход 2.2 сек
+
+// Максимальная дистанция установки блоков
+const PLACE_RANGE_TILES = 5;
+
+// Шаг для "мини-подъёмов"
+const STEP_HEIGHT = Math.floor(TILE_SIZE * 0.6);
+
+const BLOCKS = {
+  GRASS:0, DIRT:1, STONE:2, WOOD:3, LEAVES:4, FLOWER:5, PLANKS:6, BEDROCK:7, AIR:8,
+  TALL_GRASS:9, MOON_ROCK:10, MOON_FLOWER:11, COAL:12, IRON:13, CAVE_AIR:14,
+  WORKBENCH:15, COAL_ITEM:16, SNOW:17, SNOW_GRASS:18, SNOW_DIRT:19, ICE:20
+};
+
+const BLOCK_NAMES = {
+  [BLOCKS.GRASS]:"Травяной блок", [BLOCKS.DIRT]:"Земля", [BLOCKS.STONE]:"Камень",
+  [BLOCKS.WOOD]:"Бревно", [BLOCKS.LEAVES]:"Листва", [BLOCKS.FLOWER]:"Цветок",
+  [BLOCKS.PLANKS]:"Доска", [BLOCKS.BEDROCK]:"Бедрок", [BLOCKS.TALL_GRASS]:"Травинка",
+  [BLOCKS.MOON_ROCK]:"Лунный камень", [BLOCKS.MOON_FLOWER]:"Лунный цветок",
+  [BLOCKS.COAL]:"Угольная руда", [BLOCKS.IRON]:"Железная руда", [BLOCKS.WORKBENCH]:"Верстак",
+  [BLOCKS.COAL_ITEM]:"Уголь", [BLOCKS.SNOW]:"Снег", [BLOCKS.SNOW_GRASS]:"Снежная трава",
+  [BLOCKS.SNOW_DIRT]:"Снежная земля", [BLOCKS.ICE]:"Лёд"
+};
+
+const TEXTURES = {
+  player_stand: "Texture/player_stand.png",
+  player_right: "Texture/player_right.png",
+  player_left:  "Texture/player_left.png",
+  blocks: {
+    [BLOCKS.GRASS]: "Texture/grass.png",
+    [BLOCKS.DIRT]: "Texture/dirt.png",
+    [BLOCKS.STONE]: "Texture/stone.png",
+    [BLOCKS.WOOD]: "Texture/wood.png",
+    [BLOCKS.LEAVES]: "Texture/leaves.png",
+    [BLOCKS.FLOWER]: "Texture/flower.png",
+    [BLOCKS.PLANKS]: "Texture/planks.png",
+    [BLOCKS.BEDROCK]: "Texture/bedrock.png",
+    [BLOCKS.TALL_GRASS]: "Texture/tall_grass.png",
+    [BLOCKS.MOON_ROCK]: "Texture/moon_rock.png",
+    [BLOCKS.MOON_FLOWER]: "Texture/moon_flower.png",
+    [BLOCKS.COAL]: "Texture/coal.png",
+    [BLOCKS.IRON]: "Texture/iron.png",
+    [BLOCKS.WORKBENCH]: "Texture/workbench.png",
+    [BLOCKS.SNOW]: "Texture/snow.png",
+    [BLOCKS.SNOW_GRASS]: "Texture/snow_grass.png",
+    [BLOCKS.SNOW_DIRT]: "Texture/snow_dirt.png",
+    [BLOCKS.ICE]: "Texture/ice.png"
+  },
+  items: {
+    axe: "Texture/axe.png",
+    pickaxe: "Texture/pickaxe.png",
+    shovel: "Texture/shovel.png",
+    coal: "Texture/coal_item.png"
+  }
+};
+
+// ====== DOM ======
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const inventoryDiv = document.getElementById('inventory');
+const toolsDiv = document.getElementById('tools');
+const jumpSound = document.getElementById('jumpSound');
+const breakSound = document.getElementById('breakSound');
+const walkSound = document.getElementById('walkSound');
+const backgroundMusic = document.getElementById('backgroundMusic');
+const audioToggle = document.getElementById('audioToggle');
+const tooltip = document.getElementById('tooltip');
+const craftButton = document.getElementById('craftButton');
+const craftMenu = document.getElementById('craftMenu');
+const helpToggle = document.getElementById('helpToggle');
+const controlsHelp = document.getElementById('controlsHelp');
+const dayNightIndicator = document.getElementById('dayNightIndicator');
+const blockNameDiv = document.getElementById('blockName');
+
+let world = [];
+let textures = {};
+let camera = { x: 0, y: 0 };
+let audioEnabled = true;
+let lastTime = 0;
+let tooltipTimeout = null;
+let showHelp = false;
+let isGameActive = true;
+let spawnPoint = { x: 0, y: 0 };
+let dayNightCycle = { time: 0, isDay: true, transition: 1, transitioning: false };
+let snowBiomeStart = 0, snowBiomeEnd = 0;
+let snowflakes = [], isSnowing = false, lastSnowflakeTime = 0, snowflakeInterval = 100;
+
+// цель движения для анимации
+let inputTargetVX = 0;
+
+// звук шагов кулдаун
+let lastWalkAt = 0;
+
+const player = {
+  x: 300, y: 100, width: PLAYER_WIDTH, height: PLAYER_HEIGHT,
+  velX: 0, velY: 0, speed: 3.6, jumpForce: -11,
+  isJumping: false, selectedBlock: BLOCKS.GRASS,
+  inventory: {}, tools: { axe:false, pickaxe:false, shovel:false },
+  facingRight: true, onGround: false, walking:false, lastDirection:1,
+  frameTimer:0, frameInterval:160, currentFrame:0, onIce:false, iceTimer:0
+};
+
+// ====== Инвентарь ======
+function initPlayerInventory(){
+  player.inventory = {};
+  Object.values(BLOCKS).forEach(b=>{ if(!isNaN(b)) player.inventory[b]=0; });
+}
+
+// ====== Загрузка текстур ======
+function loadTextures(){
+  const list = [];
+  list.push({name:'player_stand',url:TEXTURES.player_stand});
+  list.push({name:'player_right',url:TEXTURES.player_right});
+  list.push({name:'player_left',url:TEXTURES.player_left});
+  Object.entries(TEXTURES.blocks).forEach(([id,url])=>list.push({name:`block_${id}`,url}));
+  Object.entries(TEXTURES.items).forEach(([id,url])=>list.push({name:`item_${id}`,url}));
+  let loaded=0; if(list.length===0){ initGame(); return; }
+  list.forEach(t=>{
+    const img=new Image(); img.src=t.url;
+    img.onload=()=>{textures[t.name]=img; if(++loaded===list.length) initGame();};
+    img.onerror=()=>{ console.warn('Не загрузился:',t.url); if(++loaded===list.length) initGame(); };
+  });
+}
+
+// ====== Генерация мира ======
+function generateWorld(){
+  world = Array(WORLD_HEIGHT).fill().map(()=>Array(WORLD_WIDTH).fill(BLOCKS.AIR));
+  // снежный биом
+  snowBiomeStart = Math.floor(Math.random()*(WORLD_WIDTH-120))+40;
+  snowBiomeEnd = snowBiomeStart + Math.floor(Math.random()*80)+40;
+
+  for(let x=0;x<WORLD_WIDTH;x++){
+    const transitionRadius = 8;
+    let snowFactor = 0;
+    if(x >= snowBiomeStart && x <= snowBiomeEnd) snowFactor = 1;
+    else if(x > snowBiomeStart - transitionRadius && x < snowBiomeStart) snowFactor = (x - (snowBiomeStart - transitionRadius)) / transitionRadius;
+    else if(x < snowBiomeEnd + transitionRadius && x > snowBiomeEnd) snowFactor = ((snowBiomeEnd + transitionRadius) - x) / transitionRadius;
+    snowFactor = Math.max(0, Math.min(1, snowFactor));
+
+    const groundY = Math.floor(WORLD_HEIGHT/2 + Math.sin(x/20)*3 + Math.random()*2);
+
+    for(let y=groundY;y<WORLD_HEIGHT;y++){
+      if(y===groundY){
+        if(Math.random() > 0.88){ // чаще травинки/цветы
+          if(snowFactor > 0.6) world[y-1][x] = BLOCKS.SNOW;
+          else world[y-1][x] = Math.random()>0.9?BLOCKS.MOON_FLOWER:(Math.random()>0.5?BLOCKS.FLOWER:BLOCKS.TALL_GRASS);
+        }
+        if(snowFactor > 0.6) world[y][x] = BLOCKS.SNOW_GRASS;
+        else if(snowFactor > 0.3) world[y][x] = Math.random()>0.5?BLOCKS.SNOW_GRASS:BLOCKS.GRASS;
+        else world[y][x] = BLOCKS.GRASS;
+      }
+      else if(y<groundY+3) world[y][x] = snowFactor>0.6?BLOCKS.SNOW_DIRT:BLOCKS.DIRT;
+      else if(y>=WORLD_HEIGHT-1-Math.floor(Math.random()*3)) world[y][x]=BLOCKS.BEDROCK;
+      else {
+        if(Math.random()>0.7) world[y][x] = Math.random()>0.97?BLOCKS.MOON_ROCK:BLOCKS.STONE;
+        else world[y][x] = snowFactor>0.6?BLOCKS.SNOW_DIRT:BLOCKS.DIRT;
+      }
+    }
+
+    // деревья
+    if(Math.random()>0.97 && groundY>10){
+      const th = Math.floor(Math.random()*3)+4;
+      const tx = x; const ty = groundY-1;
+      for(let y=ty;y>ty-th;y--) if(y>=0) world[y][tx]=BLOCKS.WOOD;
+      const lr = 2;
+      for(let ly=ty-th-lr; ly<=ty-th+lr; ly++){
+        for(let lx=tx-lr; lx<=tx+lr; lx++){
+          if(lx>=0 && lx<WORLD_WIDTH && ly>=0 && world[ly][lx]===BLOCKS.AIR && Math.random()>0.3) world[ly][lx]=BLOCKS.LEAVES;
+        }
+      }
+    }
+
+    // лёд в снежной зоне (случайные линзы)
+    if(snowFactor > 0.4){
+      for(let y=groundY+1; y<groundY+7; y++){
+        if(y < WORLD_HEIGHT && world[y][x] === BLOCKS.AIR && Math.random() > (0.78 - snowFactor*0.3)){
+          world[y][x] = BLOCKS.ICE;
+        }
+      }
+    }
+
+    // редкая трава поверх
+    if(Math.random()>0.82 && world[groundY-1] && world[groundY-1][x]===BLOCKS.AIR) {
+      world[groundY-1][x] = BLOCKS.TALL_GRASS;
+    }
+  }
+  generateCaves(); generateMines();
+
+  // спавн по центру мира на поверхности
+  const centerX = Math.floor(WORLD_WIDTH/2);
+  const centerY = findSurfaceY(centerX);
+  spawnPoint = { x: centerX * TILE_SIZE, y: (centerY-1) * TILE_SIZE - player.height };
+}
+
+function generateCaves(){
+  const surface = Math.floor(WORLD_HEIGHT/2);
+  const caveCount = Math.floor(Math.random()*4)+3;
+  for(let i=0;i<caveCount;i++){
+    const cx = Math.floor(Math.random()*(WORLD_WIDTH-20))+10;
+    const cy = Math.floor(Math.random()*(WORLD_HEIGHT-surface-10))+surface+10;
+    const r = Math.floor(Math.random()*3)+4;
+    for(let y=cy-r;y<=cy+r;y++){
+      for(let x=cx-r;x<=cx+r;x++){
+        if(x>=0 && x<WORLD_WIDTH && y>=0 && y<WORLD_HEIGHT){
+          const d = Math.hypot(x-cx,y-cy);
+          if(d<=r && Math.random()>0.3){
+            world[y][x] = BLOCKS.CAVE_AIR;
+            if(d>=r-1 && Math.random()>0.7) world[y][x] = Math.random()>0.5?BLOCKS.COAL:BLOCKS.IRON;
+          }
+        }
+      }
+    }
+  }
+}
+
+function generateMines(){
+  const surface = Math.floor(WORLD_HEIGHT/2);
+  const mineCount = Math.floor(Math.random()*2)+1;
+  for(let i=0;i<mineCount;i++){
+    let mx = Math.floor(Math.random()*(WORLD_WIDTH-10))+5;
+    const sy = findSurfaceY(mx);
+    const depth = Math.floor(Math.random()*20)+30;
+    const width = Math.floor(Math.random()*3)+3;
+    let curX = mx;
+    let dir = Math.random()>0.5?1:-1;
+    for(let y=sy;y<sy+depth;y++){
+      if(Math.random()>0.9) dir = Math.random()>0.5?1:-1;
+      curX += dir; if(curX<0) curX = 0; if(curX>=WORLD_WIDTH) curX = WORLD_WIDTH-1;
+      for(let w=-Math.floor(width/2); w<=Math.floor(width/2); w++){
+        const x = curX + w;
+        if(x>=0 && x<WORLD_WIDTH && y>=0 && y<WORLD_HEIGHT){
+          world[y][x] = BLOCKS.CAVE_AIR;
+          if((w===-Math.floor(width/2) || w===Math.floor(width/2)) && Math.random()>0.7) world[y][x] = Math.random()>0.5?BLOCKS.COAL:BLOCKS.IRON;
+        }
+      }
+      if(Math.random()>0.95){
+        const bl = Math.floor(Math.random()*5)+2;
+        const bd = Math.random()>0.5?1:-1;
+        for(let b=1;b<=bl;b++){
+          const bx = curX + (b*bd);
+          const by = y;
+          if(bx>=0 && bx<WORLD_WIDTH && by>=0 && by<WORLD_HEIGHT){
+            world[by][bx] = BLOCKS.CAVE_AIR;
+            if(Math.random()>0.8) world[by][bx] = Math.random()>0.5?BLOCKS.COAL:BLOCKS.IRON;
+          }
+        }
+      }
+    }
+  }
+}
+
+function findSurfaceY(x){
+  for(let y=1;y<WORLD_HEIGHT;y++){
+    const b = world[y][x];
+    if(b!==BLOCKS.AIR && b!==BLOCKS.TALL_GRASS && b!==BLOCKS.FLOWER && b!==BLOCKS.MOON_FLOWER && b!==BLOCKS.SNOW) return y;
+  }
+  return Math.floor(WORLD_HEIGHT/2);
+}
+
+function isSolidBlock(block){
+  return block!==BLOCKS.AIR && block!==BLOCKS.CAVE_AIR && block!==BLOCKS.FLOWER && block!==BLOCKS.LEAVES &&
+         block!==BLOCKS.TALL_GRASS && block!==BLOCKS.MOON_FLOWER && block!==BLOCKS.SNOW;
+}
+
+// ====== Коллизии и помощники ======
+function getTileAtXY(px, py){
+  const gx = Math.floor(px / TILE_SIZE); const gy = Math.floor(py / TILE_SIZE);
+  if(gy<0||gy>=WORLD_HEIGHT||gx<0||gx>=WORLD_WIDTH) return BLOCKS.AIR;
+  return world[gy][gx];
+}
+
+// ====== День/Ночь с плавным переходом ======
+function updateDayNightCycle(deltaTime){
+  dayNightCycle.time += deltaTime/1000;
+  const duration = dayNightCycle.isDay ? DAY_NIGHT_CYCLE.day : DAY_NIGHT_CYCLE.night;
+  if(dayNightCycle.time >= duration){
+    dayNightCycle.time = 0;
+    dayNightCycle.isDay = !dayNightCycle.isDay;
+    dayNightCycle.transitioning = true;
+    dayNightCycle.transition = 0;
+    dayNightIndicator.textContent = dayNightCycle.isDay ? 'День' : 'Ночь';
+  }
+  if(dayNightCycle.transitioning){
+    dayNightCycle.transition += deltaTime / TRANSITION_MS;
+    if(dayNightCycle.transition >= 1){ dayNightCycle.transition = 1; dayNightCycle.transitioning = false; }
+  } else {
+    dayNightCycle.transition = 1;
+  }
+}
+
+// цвета неба
+const DAY_TOP = [0x87,0xCE,0xEB];     // #87CEEB
+const DAY_BOTTOM = [0xE0,0xF7,0xFA];  // #E0F7FA
+const NIGHT_TOP = [0x00,0x1D,0x3D];   // #001D3D
+const NIGHT_BOTTOM = [0x00,0x10,0x24]; // #001024
+
+function lerp(a,b,t){ return a + (b-a)*t; }
+function colorToStr([r,g,b]){ return `rgb(${r|0},${g|0},${b|0})`; }
+
+function drawSkyGradient(){
+  // t: 0 — ночь, 1 — день (учитываем направление и прогресс перехода)
+  const targetT = dayNightCycle.isDay ? 1 : 0;
+  const t = dayNightCycle.transition * targetT + (1-dayNightCycle.transition) * (1-targetT);
+
+  const top = [ lerp(NIGHT_TOP[0], DAY_TOP[0], t), lerp(NIGHT_TOP[1], DAY_TOP[1], t), lerp(NIGHT_TOP[2], DAY_TOP[2], t) ];
+  const bottom = [ lerp(NIGHT_BOTTOM[0], DAY_BOTTOM[0], t), lerp(NIGHT_BOTTOM[1], DAY_BOTTOM[1], t), lerp(NIGHT_BOTTOM[2], DAY_BOTTOM[2], t) ];
+
+  const grad = ctx.createLinearGradient(0,0,0,canvas.height);
+  grad.addColorStop(0, colorToStr(top));
+  grad.addColorStop(1, colorToStr(bottom));
+  ctx.fillStyle = grad;
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+}
+
+// ====== Коллизии ======
+function resolveCollisionsAxis(axis){
+  let left = player.x, right = player.x + player.width, top = player.y, bottom = player.y + player.height;
+  const startX = Math.floor(left / TILE_SIZE), endX = Math.floor((right-1) / TILE_SIZE);
+  const startY = Math.floor(top / TILE_SIZE),  endY = Math.floor((bottom-1) / TILE_SIZE);
+
+  for(let ty = startY; ty <= endY; ty++){
+    for(let tx = startX; tx <= endX; tx++){
+      if(tx<0||tx>=WORLD_WIDTH||ty<0||ty>=WORLD_HEIGHT) continue;
+      const b = world[ty][tx];
+      if(!isSolidBlock(b)) continue;
+      const bx = tx * TILE_SIZE, by = ty * TILE_SIZE;
+      if(right > bx && left < bx + TILE_SIZE && bottom > by && top < by + TILE_SIZE){
+        if(axis === 'x'){
+          if(player.velX > 0){
+            if(canStepUp(1)) continue;
+            player.x = bx - player.width - 0.01; player.velX = 0;
+            left = player.x; right = player.x + player.width;
+          } else if(player.velX < 0){
+            if(canStepUp(-1)) continue;
+            player.x = bx + TILE_SIZE + 0.01; player.velX = 0;
+            left = player.x; right = player.x + player.width;
+          }
+        } else if(axis === 'y'){
+          if(player.velY > 0){
+            player.y = by - player.height - 0.01; player.velY = 0; player.onGround = true; player.isJumping = false;
+            top = player.y; bottom = player.y + player.height;
+          } else if(player.velY < 0){
+            player.y = by + TILE_SIZE + 0.01; player.velY = 0;
+            top = player.y; bottom = player.y + player.height;
+          }
+        }
+      }
+    }
+  }
+}
+
+function canStepUp(dir){
+  const originalY = player.y;
+  const tryStep = Math.min(STEP_HEIGHT, TILE_SIZE);
+  player.y -= tryStep;
+
+  const left = Math.floor(player.x / TILE_SIZE);
+  const right = Math.floor((player.x + player.width - 1) / TILE_SIZE);
+  const top = Math.floor(player.y / TILE_SIZE);
+  const bottom = Math.floor((player.y + player.height - 1) / TILE_SIZE);
+
+  let blocked = false;
+  for(let ty = top; ty <= bottom; ty++){
+    for(let tx = left; tx <= right; tx++){
+      if(tx<0||tx>=WORLD_WIDTH||ty<0||ty>=WORLD_HEIGHT) continue;
+      if(isSolidBlock(world[ty][tx])) { blocked = true; break; }
+    }
+    if(blocked) break;
+  }
+  if(!blocked){ player.velY = -2; player.onGround = false; return true; }
+  player.y = originalY; return false;
+}
+
+function updateGroundAndIceStatus(){
+  const footY = player.y + player.height + 1;
+  const leftX = player.x + player.width*0.25;
+  const rightX = player.x + player.width*0.75;
+  const leftTile = getTileAtXY(leftX, footY);
+  const rightTile = getTileAtXY(rightX, footY);
+  player.onGround = isSolidBlock(leftTile) || isSolidBlock(rightTile);
+  player.onIce = (leftTile === BLOCKS.ICE) || (rightTile === BLOCKS.ICE);
+}
+
+// ====== Физика ======
+function updatePhysics(deltaTime){
+  if(!isGameActive) return;
+
+  updateDayNightCycle(deltaTime);
+
+  const dtFactor = deltaTime/16;
+  const gravity = 0.5;
+  player.velY += gravity * dtFactor;
+
+  // ограничения
+  player.velX = Math.max(-10, Math.min(10, player.velX));
+  player.velY = Math.max(-40, Math.min(40, player.velY));
+
+  // интеграция
+  player.x += player.velX * dtFactor; resolveCollisionsAxis('x');
+  player.y += player.velY * dtFactor; resolveCollisionsAxis('y');
+  updateGroundAndIceStatus();
+
+  // трение
+  if(player.onGround && !player.onIce){ player.velX *= 0.82; if(Math.abs(player.velX) < 0.05) player.velX = 0; }
+  if(player.onIce) player.velX *= 0.995;
+
+  // в границах мира
+  player.x = Math.max(0, Math.min(WORLD_WIDTH*TILE_SIZE - player.width, player.x));
+  player.y = Math.min(WORLD_HEIGHT*TILE_SIZE - player.height, player.y);
+
+  updateCamera();
+
+  // анимация бега: работает и на земле, и в воздухе, если держишь движение
+  const movingIntent = Math.abs(inputTargetVX) > 0.1;
+  player.walking = movingIntent; // теперь не зависит от onGround
+  if(player.walking){
+    player.frameTimer += deltaTime;
+    if(player.frameTimer > player.frameInterval){
+      player.frameTimer = 0;
+      player.currentFrame = (player.currentFrame+1)%2;
+    }
+  } else {
+    player.currentFrame = 0; player.frameTimer = 0;
+  }
+
+  // звук шагов — только когда реально движемся по земле, с кулдауном 4 сек
+  if(player.onGround && Math.abs(player.velX) > 0.2){
+    const now = performance.now();
+    if(now - lastWalkAt >= 4000 && audioEnabled){
+      lastWalkAt = now;
+      try { walkSound.currentTime = 0; walkSound.play(); } catch(e){}
+    }
+  }
+}
+
+// ====== Ввод ======
+const keys = {};
+window.addEventListener('keydown', e=>{
+  keys[e.key.toLowerCase()] = true;
+  if(e.key===' ') e.preventDefault();
+  if(e.key.toLowerCase()==='r') toggleCraftMenu();
+});
+window.addEventListener('keyup', e=>{ keys[e.key.toLowerCase()] = false; });
+
+function handleInput(){
+  if(!isGameActive) return;
+  let targetVX = 0;
+  if(keys['a'] || keys['arrowleft'] || keys['ф']) targetVX = -player.speed;
+  if(keys['d'] || keys['arrowright'] || keys['в']) targetVX =  player.speed;
+
+  inputTargetVX = targetVX;
+
+  const accel = player.onIce ? 0.05 : 0.34;
+  player.velX += (targetVX - player.velX) * accel;
+
+  if((keys['w'] || keys[' '] || keys['arrowup'] || keys['ц']) && player.onGround){
+    player.velY = player.jumpForce; player.onGround = false; player.isJumping = true;
+    if(audioEnabled){ try { jumpSound.currentTime = 0; jumpSound.play(); } catch(e){} }
+  }
+}
+
+// ====== Камера ======
+function updateCamera(){
+  const targetX = player.x - canvas.width/2 + player.width/2;
+  const targetY = player.y - canvas.height/2 + player.height/2;
+  camera.x += (targetX - camera.x) * CAMERA_SMOOTHING;
+  camera.y += (targetY - camera.y) * CAMERA_SMOOTHING;
+  camera.x = Math.max(0, Math.min(WORLD_WIDTH*TILE_SIZE - canvas.width, camera.x));
+  camera.y = Math.max(0, Math.min(WORLD_HEIGHT*TILE_SIZE - canvas.height, camera.y));
+}
+
+// ====== Снег ======
+function updateSnowflakes(deltaTime){
+  if(!isSnowing){ snowflakes=[]; return; }
+  lastSnowflakeTime += deltaTime;
+  if(lastSnowflakeTime > snowflakeInterval){
+    lastSnowflakeTime = 0;
+    const count = Math.floor(Math.random()*3)+1;
+    for(let i=0;i<count;i++)
+      snowflakes.push({ x: Math.random()*canvas.width, y:-10, size: Math.random()*3+2, speed: Math.random()*2+1, drift: Math.random()*2-1 });
+  }
+  for(let i=snowflakes.length-1;i>=0;i--){
+    const f = snowflakes[i]; f.y += f.speed; f.x += f.drift*0.2; if(f.y > canvas.height+10) snowflakes.splice(i,1);
+  }
+}
+function renderSnowflakes(){
+  if(!isSnowing) return;
+  ctx.save(); ctx.fillStyle='white';
+  for(const f of snowflakes){ ctx.beginPath(); ctx.arc(f.x, f.y, f.size, 0, Math.PI*2); ctx.fill(); }
+  ctx.restore();
+}
+
+// ====== Рендер ======
+function render(){
+  // фон: под землёй — тёмно-коричневый; на поверхности — плавный градиент день/ночь
+  const playerGridY = Math.floor((player.y + player.height/2) / TILE_SIZE);
+  const underGround = playerGridY > WORLD_HEIGHT/2 + 6;
+  if(underGround){
+    ctx.fillStyle = '#2b1f14'; ctx.fillRect(0,0,canvas.width,canvas.height);
+  } else {
+    drawSkyGradient();
+  }
+
+  const startX = Math.max(0, Math.floor(camera.x / TILE_SIZE));
+  const endX   = Math.min(WORLD_WIDTH, startX + Math.ceil(canvas.width / TILE_SIZE) + 1);
+  const startY = Math.max(0, Math.floor(camera.y / TILE_SIZE));
+  const endY   = Math.min(WORLD_HEIGHT, startY + Math.ceil(canvas.height / TILE_SIZE) + 1);
+
+  for(let y=startY;y<endY;y++){
+    for(let x=startX;x<endX;x++){
+      const b = world[y][x]; if(b===BLOCKS.AIR || b===BLOCKS.CAVE_AIR) continue;
+      const bx = x*TILE_SIZE - camera.x; const by = y*TILE_SIZE - camera.y;
+      const key = `block_${b}`;
+      if(textures[key]){
+        if(b===BLOCKS.LEAVES||b===BLOCKS.FLOWER||b===BLOCKS.TALL_GRASS||b===BLOCKS.MOON_FLOWER||b===BLOCKS.SNOW){
+          ctx.globalAlpha = 0.75; ctx.drawImage(textures[key], bx, by, TILE_SIZE, TILE_SIZE); ctx.globalAlpha = 1;
+        } else {
+          ctx.drawImage(textures[key], bx, by, TILE_SIZE, TILE_SIZE);
+        }
+      } else { ctx.fillStyle='#f00'; ctx.fillRect(bx,by,TILE_SIZE,TILE_SIZE); }
+    }
+  }
+
+  // игрок — анимация; в прыжке при удержании направления показываем "ходьбу"
+  let playerTexture = textures.player_stand || null;
+  const movingIntent = Math.abs(inputTargetVX) > 0.1;
+  if(!player.onGround && movingIntent){
+    playerTexture = player.currentFrame===0 ? textures.player_right : textures.player_left;
+  } else if(player.walking){
+    playerTexture = player.currentFrame===0 ? textures.player_right : textures.player_left;
+  } else {
+    playerTexture = textures.player_stand;
+  }
+
+  if(playerTexture){
+    ctx.save();
+    const idleOffset = (player.velX===0 && player.onGround) ? Math.sin(Date.now()/300)*2 : 0;
+    ctx.translate(player.x - camera.x + player.width/2, player.y - camera.y + player.height/2 + idleOffset);
+    if(inputTargetVX < -0.1) player.lastDirection = -1;
+    else if(inputTargetVX > 0.1) player.lastDirection = 1;
+    if(player.lastDirection === -1) ctx.scale(-1,1);
+    ctx.drawImage(playerTexture, -player.width/2, -player.height/2, player.width, player.height);
+    ctx.restore();
+  } else {
+    ctx.fillStyle='#FF5722'; ctx.fillRect(player.x-camera.x, player.y-camera.y, player.width, player.height);
+  }
+
+  renderSnowflakes();
+}
+
+// ====== Взаимодействие с блоками ======
+function isAdjacentToSolid(bx, by){
+  // сосед по стороне должен быть твёрдым
+  const up    = (by-1)>=0                  ? world[by-1][bx] : BLOCKS.BEDROCK;
+  const down  = (by+1)<WORLD_HEIGHT        ? world[by+1][bx] : BLOCKS.BEDROCK;
+  const left  = (bx-1)>=0                  ? world[by][bx-1] : BLOCKS.BEDROCK;
+  const right = (bx+1)<WORLD_WIDTH         ? world[by][bx+1] : BLOCKS.BEDROCK;
+  return isSolidBlock(up) || isSolidBlock(down) || isSolidBlock(left) || isSolidBlock(right);
+}
+
+function handleBlockClick(e){
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+
+  const mouseX = mx + camera.x;
+  const mouseY = my + camera.y;
+  const bx = Math.floor(mouseX / TILE_SIZE);
+  const by = Math.floor(mouseY / TILE_SIZE);
+  if(bx<0||bx>=WORLD_WIDTH||by<0||by>=WORLD_HEIGHT) return;
+
+  const blockWorldX = bx * TILE_SIZE, blockWorldY = by * TILE_SIZE;
+
+  // дистанция до центра блока
+  const dist = Math.hypot((blockWorldX+TILE_SIZE/2) - (player.x+player.width/2),
+                          (blockWorldY+TILE_SIZE/2) - (player.y+player.height/2));
+  if(dist > TILE_SIZE*PLACE_RANGE_TILES) return;
+
+  // нельзя ставить в хитбокс игрока
+  const willOverlapPlayer = !(blockWorldX + TILE_SIZE < player.x ||
+                              blockWorldX > player.x + player.width ||
+                              blockWorldY + TILE_SIZE < player.y ||
+                              blockWorldY > player.y + player.height);
+
+  if(e.button===0){
+    // СТАВИМ
+    if(willOverlapPlayer){ showTooltip('Нельзя ставить блок прямо в игрока!'); return; }
+    if(world[by][bx]===BLOCKS.AIR || world[by][bx]===BLOCKS.CAVE_AIR){
+      if(!isAdjacentToSolid(bx,by)){ showTooltip('Нельзя ставить в воздухе!'); return; }
+      if(player.selectedBlock !== BLOCKS.AIR && useFromInventory(player.selectedBlock)){
+        world[by][bx]=player.selectedBlock;
+      }
+    }
+  } else if(e.button===2){
+    // ЛОМАЕМ
+    if(world[by][bx]!==BLOCKS.AIR && world[by][bx]!==BLOCKS.CAVE_AIR){
+      const blockType = world[by][bx];
+
+      let needTool = null;
+      if((blockType===BLOCKS.STONE||blockType===BLOCKS.MOON_ROCK||blockType===BLOCKS.COAL||blockType===BLOCKS.IRON) && !player.tools.pickaxe) needTool='кирку';
+      if((blockType===BLOCKS.DIRT||blockType===BLOCKS.GRASS||blockType===BLOCKS.SNOW_DIRT||blockType===BLOCKS.SNOW_GRASS) && !player.tools.shovel) needTool='лопату';
+      if((blockType===BLOCKS.WOOD||blockType===BLOCKS.PLANKS||blockType===BLOCKS.WORKBENCH) && !player.tools.axe) needTool='топор';
+      if(blockType===BLOCKS.SNOW && !player.tools.shovel) needTool='лопату';
+
+      if(needTool){ showTooltip(`Нужна ${needTool} для этого блока!`); return; }
+
+      if(blockType !== BLOCKS.BEDROCK){
+        world[by][bx] = BLOCKS.AIR;
+        if(blockType === BLOCKS.COAL) addToInventory(BLOCKS.COAL_ITEM);
+        else addToInventory(blockType);
+        if(audioEnabled){ try { breakSound.currentTime = 0; breakSound.play(); } catch(e){} }
+      }
+    }
+  }
+}
+
+function showTooltip(msg){
+  tooltip.textContent = msg; tooltip.style.opacity = 1;
+  if(tooltipTimeout) clearTimeout(tooltipTimeout);
+  tooltipTimeout = setTimeout(()=> tooltip.style.opacity = 0, 1800);
+}
+
+// ====== Интерфейс ======
+function initInventory(){
+  inventoryDiv.innerHTML='';
+  const order=[BLOCKS.GRASS,BLOCKS.DIRT,BLOCKS.STONE,BLOCKS.WOOD,BLOCKS.LEAVES,BLOCKS.FLOWER,BLOCKS.PLANKS,BLOCKS.TALL_GRASS,BLOCKS.MOON_ROCK,BLOCKS.MOON_FLOWER,BLOCKS.COAL_ITEM,BLOCKS.IRON,BLOCKS.SNOW,BLOCKS.SNOW_GRASS,BLOCKS.SNOW_DIRT,BLOCKS.ICE,BLOCKS.WORKBENCH];
+  order.forEach(bid=>{
+    if(player.inventory[bid]>0){
+      const div=document.createElement('div');
+      div.className='item';
+      if(bid===BLOCKS.COAL_ITEM) div.style.backgroundImage=`url(${TEXTURES.items.coal})`;
+      else div.style.backgroundImage=`url(${TEXTURES.blocks[bid]})`;
+      const span=document.createElement('span'); span.className='item-count'; span.textContent=player.inventory[bid]||0;
+      div.appendChild(span);
+      div.onclick=()=>{
+        document.querySelectorAll('#inventory .item').forEach(el=>el.classList.remove('active'));
+        div.classList.add('active');
+        player.selectedBlock=bid; player.tools.axe=false; player.tools.pickaxe=false; player.tools.shovel=false;
+      };
+      div.onmouseenter=()=>{
+        blockNameDiv.textContent = BLOCK_NAMES[bid]||'Блок';
+        blockNameDiv.style.display='block';
+        blockNameDiv.style.left = `${div.getBoundingClientRect().left + div.offsetWidth/2}px`;
+        blockNameDiv.style.top = `${div.getBoundingClientRect().top - 10}px`;
+      };
+      div.onmouseleave=()=>{ blockNameDiv.style.display='none'; };
+      inventoryDiv.appendChild(div);
+    }
+  });
+}
+
+function initTools(){
+  toolsDiv.innerHTML='';
+  const toolsOrder=[{id:'axe',name:'Топор'},{id:'pickaxe',name:'Кирка'},{id:'shovel',name:'Лопата'}];
+  toolsOrder.forEach(t=>{
+    const td=document.createElement('div');
+    td.className='item'; td.style.backgroundImage=`url(${TEXTURES.items[t.id]})`;
+    td.onclick=()=>{
+      document.querySelectorAll('#tools .item').forEach(el=>el.classList.remove('active'));
+      td.classList.add('active');
+      player.tools.axe = t.id==='axe';
+      player.tools.pickaxe = t.id==='pickaxe';
+      player.tools.shovel = t.id==='shovel';
+      player.selectedBlock = BLOCKS.AIR;
+    };
+    td.onmouseenter=()=>{
+      blockNameDiv.textContent=t.name; blockNameDiv.style.display='block';
+      blockNameDiv.style.left=`${td.getBoundingClientRect().left + td.offsetWidth/2}px`;
+      blockNameDiv.style.top=`${td.getBoundingClientRect().top - 10}px`;
+    };
+    td.onmouseleave=()=> blockNameDiv.style.display='none';
+    toolsDiv.appendChild(td);
+  });
+}
+
+function addToInventory(blockType){
+  if(player.inventory.hasOwnProperty(blockType)){
+    player.inventory[blockType] = (player.inventory[blockType]||0) + 1;
+    initInventory();
+  }
+}
+function useFromInventory(blockType){
+  if(player.inventory[blockType] > 0){
+    player.inventory[blockType]--; initInventory(); return true;
+  } return false;
+}
+
+// ====== Крафты ======
+function craftPlanks(){
+  if(player.inventory[BLOCKS.WOOD] >= 1){
+    player.inventory[BLOCKS.WOOD]--;
+    player.inventory[BLOCKS.PLANKS] = (player.inventory[BLOCKS.PLANKS]||0) + 5;
+    initInventory(); showTooltip('1 бревно → 5 досок!');
+    return true;
+  } else { showTooltip('Нужно 1 бревно для крафта!'); return false; }
+}
+function craftWorkbench(){
+  if(player.inventory[BLOCKS.PLANKS] >= 15){
+    player.inventory[BLOCKS.PLANKS] -= 15;
+    player.inventory[BLOCKS.WORKBENCH] = (player.inventory[BLOCKS.WORKBENCH]||0) + 1;
+    initInventory(); showTooltip('15 досок → 1 верстак!');
+    return true;
+  } else { showTooltip('Нужно 15 досок для крафта!'); return false; }
+}
+function toggleCraftMenu(){
+  craftMenu.style.display = (craftMenu.style.display === 'flex' || craftMenu.style.display === 'block') ? 'none' : 'flex';
+}
+document.getElementById('craft_planks').addEventListener('click', craftPlanks);
+document.getElementById('craft_workbench').addEventListener('click', craftWorkbench);
+
+// ====== Звук и UI ======
+audioToggle.addEventListener('click', ()=>{
+  audioEnabled = !audioEnabled;
+  audioToggle.textContent = audioEnabled ? '🔊 Звук ВКЛ' : '🔇 Звук ВЫКЛ';
+  if(audioEnabled) backgroundMusic.play().catch(()=>{});
+  else backgroundMusic.pause();
+});
+helpToggle.addEventListener('click', ()=>{
+  showHelp = !showHelp; controlsHelp.style.display = showHelp ? 'block' : 'none';
+});
+craftButton.addEventListener('click', toggleCraftMenu);
+
+canvas.addEventListener('mousedown', handleBlockClick);
+canvas.addEventListener('contextmenu', e=>e.preventDefault());
+
+// защита: если вкладка была скрыта — возврат и ресет падения
+document.addEventListener('visibilitychange', () => {
+  isGameActive = !document.hidden;
+  if (isGameActive) {
+    if (player.y >= WORLD_HEIGHT * TILE_SIZE - player.height - 10) {
+      player.x = spawnPoint.x; player.y = spawnPoint.y; player.velX = 0; player.velY = 0;
+    }
+  }
+});
+
+// ====== Главный цикл ======
+function gameLoop(timestamp){
+  const deltaTime = lastTime ? timestamp - lastTime : 16;
+  lastTime = timestamp;
+
+  handleInput();
+  updatePhysics(deltaTime);
+
+  const playerGridX = Math.floor((player.x + player.width/2) / TILE_SIZE);
+  isSnowing = playerGridX >= snowBiomeStart && playerGridX <= snowBiomeEnd;
+  updateSnowflakes(deltaTime);
+
+  render();
+  requestAnimationFrame(gameLoop);
+}
+
+function initGame(){
+  canvas.width = window.innerWidth; canvas.height = window.innerHeight;
+  player.x = spawnPoint.x; player.y = spawnPoint.y; player.velX = 0; player.velY = 0;
+  if(audioEnabled){ backgroundMusic.volume = 0.3; backgroundMusic.play().catch(()=>{}); }
+  initTools(); initInventory();
+  requestAnimationFrame(gameLoop);
+}
+
+window.addEventListener('load', ()=>{
+  initPlayerInventory(); generateWorld(); loadTextures(); initInventory();
+});
+window.addEventListener('resize', ()=>{
+  canvas.width = window.innerWidth; canvas.height = window.innerHeight;
+});
+
+// Подсказки (на будущее)
+function suggestions(){
+  return ['Оптимизация рендеринга (offscreen canvas).','Сохранение/загрузка мира (localStorage).','Частицы и звуки при сборе.','Мобильные кнопки и управление.','Мобы и враги.'];
+}
+</script>
+</body>
+</html>
